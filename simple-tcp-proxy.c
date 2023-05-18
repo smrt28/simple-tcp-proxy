@@ -36,7 +36,6 @@ char client_hostname[64];
 void
 cleanup(int sig)
 {
-    syslog(LOG_NOTICE, "Cleaning up...");
     exit(0);
 }
 
@@ -57,13 +56,11 @@ set_nonblock(int fd)
     int x;
     fl = fcntl(fd, F_GETFL, 0);
     if (fl < 0) {
-	syslog(LOG_ERR, "fcntl F_GETFL: FD %d: %s", fd, strerror(errno));
-	exit(1);
+        exit(1);
     }
     x = fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     if (x < 0) {
-	syslog(LOG_ERR, "fcntl F_SETFL: FD %d: %s", fd, strerror(errno));
-	exit(1);
+        exit(1);
     }
 }
 
@@ -91,7 +88,6 @@ create_server_sock(char *addr, int port)
     x = listen(s, 5);
     if (x < 0)
 	err(1, "listen %s:%d", addr, port);
-    syslog(LOG_NOTICE, "listening on %s port %d", addr, port);
 
     return s;
 }
@@ -121,7 +117,9 @@ open_remote_host(char *host, int port)
     rem_addr.sin_family = AF_INET;
     memcpy(&rem_addr.sin_addr, H->h_addr, H->h_length);
     rem_addr.sin_port = htons(port);
+    printf("calling connect...\n");
     x = connect(s, (struct sockaddr *) &rem_addr, len);
+    printf("connected\n");
     if (x < 0) {
 	close(s);
 	return x;
@@ -192,6 +190,12 @@ service_client(int cfd, int sfd)
     int cbo = 0;
     int sbo = 0;
     fd_set R;
+    int tmp;
+    int logcnt = 0;
+    int ctotal = 0;
+    int stotal = 0; 
+
+    printf("service client started\n");
 
     sbuf = malloc(BUF_SIZE);
     cbuf = malloc(BUF_SIZE);
@@ -201,17 +205,28 @@ service_client(int cfd, int sfd)
     while (1) {
 	struct timeval to;
 	if (cbo) {
-		if (mywrite(sfd, cbuf, &cbo) < 0 && errno != EWOULDBLOCK) {
-			syslog(LOG_ERR, "write %d: %s", sfd, strerror(errno));
-				exit(1);
+        tmp = mywrite(sfd, cbuf, &cbo);
+
+		if (tmp < 0 && errno != EWOULDBLOCK) {
+            printf("ERROR: write (cbo) failed; errno=%d", errno);
+            exit(1);
 		}
+        ctotal += tmp;
 	}
 	if (sbo) {
-		if (mywrite(cfd, sbuf, &sbo) < 0 && errno != EWOULDBLOCK) {
-			syslog(LOG_ERR, "write %d: %s", cfd, strerror(errno));
-				exit(1);
+        tmp = mywrite(cfd, sbuf, &sbo);
+		if (tmp < 0 && errno != EWOULDBLOCK) {
+            printf("ERROR: write (sbo) failed; errno=%d", errno);
+            exit(1);
 		}
+        stotal += tmp;
 	}
+
+    logcnt++;
+    if (logcnt % 5000 == 0) {
+        printf("%d %d %d\n", logcnt, ctotal, stotal);
+    }
+
 	FD_ZERO(&R);
 	if (cbo < BUF_SIZE)
 		FD_SET(cfd, &R);
@@ -229,27 +244,22 @@ service_client(int cfd, int sfd)
 		} else {
 		    close(cfd);
 		    close(sfd);
-		    syslog(LOG_INFO, "exiting");
 		    _exit(0);
 		}
 	    }
 	    if (FD_ISSET(sfd, &R)) {
 		n = read(sfd, sbuf+sbo, BUF_SIZE-sbo);
-		syslog(LOG_INFO, "read %d bytes from SERVER (%d)", n, sfd);
 		if (n > 0) {
 		    sbo += n;
 		} else {
 		    close(sfd);
 		    close(cfd);
-		    syslog(LOG_INFO, "exiting");
 		    _exit(0);
 		}
 	    }
 	} else if (x < 0 && errno != EINTR) {
-	    syslog(LOG_NOTICE, "select: %s", strerror(errno));
 	    close(sfd);
 	    close(cfd);
-	    syslog(LOG_NOTICE, "exiting");
 	    _exit(0);
 	}
     }
@@ -289,25 +299,29 @@ main(int argc, char *argv[])
 
     master_sock = create_server_sock(localaddr, localport);
     for (;;) {
-	if ((client = wait_for_connection(master_sock)) < 0)
-	    continue;
-	if ((server = open_remote_host(remoteaddr, remoteport)) < 0) {
-	    close(client);
-	    client = -1;
-	    continue;
-	}
-	if (0 == fork()) {
-	    /* child */
-	    syslog(LOG_NOTICE, "connection from %s fd=%d", client_hostname, client);
-	    syslog(LOG_INFO, "connected to %s:%d fd=%d", remoteaddr, remoteport, server);
-	    close(master_sock);
-	    service_client(client, server);
-	    abort();
-	}
-	close(client);
-	client = -1;
-	close(server);
-	server = -1;
+        printf("loop next...\n");
+        if ((client = wait_for_connection(master_sock)) < 0)
+            continue;
+        printf("connect...\n");
+        if ((server = open_remote_host(remoteaddr, remoteport)) < 0) {
+            printf("ERROR: open remote host failed....\n");
+            close(client);
+            client = -1;
+            continue;
+        }
+        printf("before fork\n");
+        if (0 == fork()) {
+            printf("in fork\n");
+            /* child */
+            close(master_sock);
+            service_client(client, server);
+            printf("clent exited...\n");
+            abort();
+        }
+        close(client);
+        client = -1;
+        close(server);
+        server = -1;
     }
 
 }
